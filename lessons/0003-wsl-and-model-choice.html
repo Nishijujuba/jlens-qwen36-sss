@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 3 课：WSL、显存预算与模型选择</title>
+  <link rel="stylesheet" href="../assets/teaching.css">
+  <script defer src="../assets/lesson.js"></script>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="eyebrow">Lesson 0003</p>
+    <h1>WSL、显存预算与模型选择</h1>
+    <p class="lead">本课基于 RTX 3080 Laptop 16 GB 专用显存、约 32 GB 系统内存和 WSL 环境，判断原项目能否本地运行，并给出分阶段模型方案。</p>
+    <div class="lesson-meta">
+      <span class="pill">约 15 分钟</span>
+      <span class="pill">硬件决策</span>
+      <span class="pill">可执行检查</span>
+    </div>
+  </header>
+
+  <article>
+    <p class="summary">结论先行：该笔记本适合用 Qwen3.5-0.8B-Base 建立可解释性实验闭环，再升级到 Qwen3.5-2B；原仓库的 Qwen3.6-27B + MLX/Metal 完整路径不适合作为本地起点。</p>
+
+    <section>
+      <h2>1. 先纠正模型名称</h2>
+      <div class="callout warning">
+        <strong>仓库名容易造成误解</strong>
+        <code>jlens-qwen36</code> 中的 “36” 指 Qwen 3.6 版本。仓库默认模型是 <strong>Qwen3.6-27B</strong>，参数量为 27B。它并非一个 36B 参数模型。
+      </div>
+      <p>Qwen3.6-27B 具有 64 层和 5120 隐藏维度，并混合使用 Gated DeltaNet 与全注意力。仓库针对这套架构实现了专用读出、缓存和反向路径。</p>
+    </section>
+
+    <section>
+      <h2>2. 原项目受两个独立约束</h2>
+      <div class="card-grid">
+        <div class="card">
+          <h3>约束 A：平台</h3>
+          <p>项目依赖 MLX、mlx-lm 和自定义 Metal GDN 反向内核。Metal 属于 Apple 平台。WSL 中的 RTX 3080 使用 CUDA。</p>
+          <p>MLX 已出现 Linux/CUDA 支持路径，当前仓库仍明确标记 Apple/MLX only，性能关键的 GDN 反向实现仍是 Metal 专用。完整 CUDA 路径需要移植和重新验证。</p>
+        </div>
+        <div class="card">
+          <h3>约束 B：内存</h3>
+          <p>27B 模型的 4-bit 权重理论下限约 13.5 GB。实际加载还包括量化尺度、元数据、未量化模块、运行工作区、激活、缓存和 lens。</p>
+          <p>仓库的全深度 fp16 lens 本身约 3.3 GB。16 GB 专用显存无法同时为全部组件留下可靠余量。</p>
+        </div>
+      </div>
+      <p>两个约束需要分别解决。增加内存不会自动获得 Metal 兼容性；移植到 CUDA后仍要重新计算显存预算。</p>
+    </section>
+
+    <section>
+      <h2>3. 显存到底被什么占用</h2>
+      <div class="flow">
+        <div class="step"><span class="number">BUCKET 1</span><b>模型权重</b><small>长期驻留的参数</small></div>
+        <div class="step"><span class="number">BUCKET 2</span><b>推理状态</b><small>激活、KV/GDN 缓存、工作区</small></div>
+        <div class="step"><span class="number">BUCKET 3</span><b>分析开销</b><small>Jacobian、梯度图、lens、临时矩阵</small></div>
+      </div>
+
+      <p>最简单的权重估算为：</p>
+      <div class="equation">权重体积 ≈ 参数量 × 每个参数的字节数</div>
+      <table>
+        <thead><tr><th>数值格式</th><th>理论字节/参数</th><th>常见用途</th></tr></thead>
+        <tbody>
+          <tr><td>FP32</td><td>4</td><td>高精度计算与部分累加</td></tr>
+          <tr><td>BF16 / FP16</td><td>2</td><td>GPU 推理、梯度与可解释性实验</td></tr>
+          <tr><td>8-bit</td><td>约 1，加元数据</td><td>节省推理内存</td></tr>
+          <tr><td>4-bit</td><td>约 0.5，加元数据</td><td>更激进的推理压缩</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout warning">
+        <strong>量化的隐藏代价</strong>
+        4-bit 能显著缩小权重。Jacobian、梯度和因果干预还依赖可微算子、激活精度和临时张量。能完成量化推理，无法直接推出能完成梯度型可解释性实验。
+      </div>
+
+      <h3>共享 GPU 内存的含义</h3>
+      <p>任务管理器显示约 15.9 GB 共享 GPU 内存。这部分容量来自系统 RAM，经较慢的数据路径访问。它不能按额外 15.9 GB 高速显存计算。模型溢出到共享内存或 CPU 后，速度、延迟和稳定性都会明显恶化。</p>
+    </section>
+
+    <section>
+      <h2>4. 四个模型的本地适配度</h2>
+      <table>
+        <thead><tr><th>模型</th><th>主体权重粗估</th><th>教学用途</th><th>本机判断</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>Qwen3.5-0.8B-Base</code></td>
+            <td>BF16 约 1.6 GB</td>
+            <td>隐藏状态捕获、logit lens、小规模 Jacobian、受控下一词实验</td>
+            <td><strong>第一阶段推荐</strong></td>
+          </tr>
+          <tr>
+            <td><code>Qwen3.5-2B</code></td>
+            <td>BF16 约 4 GB</td>
+            <td>在更有行为能力的模型上复现实验</td>
+            <td><strong>第二阶段推荐</strong>，短上下文先实测</td>
+          </tr>
+          <tr>
+            <td><code>Qwen3.5-4B</code></td>
+            <td>BF16 约 8 GB</td>
+            <td>只读激活、logit lens、量化推理</td>
+            <td>后续可尝试；完整梯度实验余量较紧</td>
+          </tr>
+          <tr>
+            <td><code>Qwen3.6-27B 4-bit</code></td>
+            <td>原始 4-bit 权重理论约 13.5 GB，仓库下载约 15 GB</td>
+            <td>原项目完整演示与研究级复现</td>
+            <td>16 GB 显存下不适合完整路径</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Jacobian lens 矩阵的大小随隐藏维度平方增长：</p>
+      <div class="equation">单层 lens 大小 ≈ d<sup>2</sup> × 每元素字节数</div>
+      <table>
+        <thead><tr><th>模型</th><th>隐藏维度</th><th>全部层 fp16 lens 粗估</th></tr></thead>
+        <tbody>
+          <tr><td>Qwen3.5-0.8B</td><td>1024</td><td>约 50 MB</td></tr>
+          <tr><td>Qwen3.5-2B</td><td>2048</td><td>约 200 MB</td></tr>
+          <tr><td>Qwen3.5-4B</td><td>2560</td><td>约 420 MB</td></tr>
+          <tr><td>Qwen3.6-27B</td><td>5120</td><td>约 3.3 GB</td></tr>
+        </tbody>
+      </table>
+      <p>隐藏维度从 1024 增加到 5120，扩大 5 倍；矩阵元素数扩大 25 倍。这是从小模型开始学习 Jacobian lens 的主要计算理由。</p>
+    </section>
+
+    <section>
+      <h2>5. 为什么第一阶段选择 Base 模型</h2>
+      <p><code>Qwen/Qwen3.5-0.8B-Base</code> 更适合第一个受控实验：</p>
+      <ul class="checklist">
+        <li>模型规模小，BF16 下仍有足够显存保存激活和梯度图。</li>
+        <li>同属 <code>qwen3_5</code> 架构家族，术语和部分代码结构可迁移回原仓库。</li>
+        <li>Base 模型直接执行下一词预测，减少聊天模板、系统提示和后训练行为引入的变量。</li>
+        <li>24 层、隐藏维度 1024，使显式小型 Jacobian 或分层实验仍有可控成本。</li>
+      </ul>
+      <p>第二阶段再换成 <code>Qwen/Qwen3.5-2B</code>，检查结论是否随模型能力提高而保持。模型升级应由实测峰值显存、每词元速度和实验稳定性决定。</p>
+
+      <div class="quiz" data-answer="a" data-explanation="第一阶段需要同时保留模型、激活、梯度图和分析张量；0.8B BF16 留出的实验余量最大，也最容易定位错误。">
+        <h3>检索练习</h3>
+        <p>为何第一阶段优先选择 0.8B BF16？</p>
+        <div class="quiz-options">
+          <button type="button" data-choice="a" aria-pressed="false">给梯度与分析张量保留显存</button>
+          <button type="button" data-choice="b" aria-pressed="false">让共享内存自动变成专用显存</button>
+          <button type="button" data-choice="c" aria-pressed="false">绕过全部架构与算子兼容问题</button>
+        </div>
+        <p class="quiz-feedback" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section id="checks">
+      <h2>6. 在 WSL 内完成环境验收</h2>
+      <p>先验证 GPU 是否真正暴露给 WSL，再安装或调整 Python 环境。Windows PowerShell 中执行：</p>
+      <pre><code>wsl --version
+wsl -l -v</code></pre>
+      <p>目标是看到 WSL 2。随后进入 WSL，执行：</p>
+      <pre><code>nvidia-smi
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader</code></pre>
+      <p>目标是看到 RTX 3080 Laptop、约 16 GB 显存和驱动版本。NVIDIA 的 Windows 驱动会把 CUDA 能力暴露到 WSL。不要在 WSL 内安装 Linux 显示驱动；这可能覆盖或冲突 WSL 的驱动映射。</p>
+
+      <p>已有 PyTorch 环境时继续执行：</p>
+      <pre><code>python - &lt;&lt;'PY'
+import torch
+
+print("PyTorch:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("CUDA runtime:", torch.version.cuda)
+    print("GPU:", torch.cuda.get_device_name(0))
+    total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    print(f"VRAM: {total:.2f} GiB")
+    x = torch.randn(2048, 2048, device="cuda", dtype=torch.float16)
+    y = x @ x
+    torch.cuda.synchronize()
+    print("FP16 CUDA matmul:", tuple(y.shape), "OK")
+PY</code></pre>
+
+      <div class="callout info">
+        <strong>验收含义</strong>
+        <code>nvidia-smi</code> 成功只证明 WSL 看到了 GPU。PyTorch 检查进一步证明当前 Python 环境、CUDA 运行时和实际张量计算可以协同工作。
+      </div>
+    </section>
+
+    <section>
+      <h2>7. 分阶段实验路线</h2>
+      <table>
+        <thead><tr><th>阶段</th><th>模型</th><th>可验证成果</th><th>升级门槛</th></tr></thead>
+        <tbody>
+          <tr><td>0 环境</td><td>无</td><td>WSL、CUDA、PyTorch 矩阵乘法通过</td><td>无报错，显存识别正确</td></tr>
+          <tr><td>1 数据流</td><td>0.8B Base</td><td>捕获指定层隐藏状态和张量形状</td><td>能解释每个维度</td></tr>
+          <tr><td>2 读出</td><td>0.8B Base</td><td>实现最终层读出和 logit lens</td><td>能复现 top-k，结果确定</td></tr>
+          <tr><td>3 局部 Jacobian</td><td>0.8B Base</td><td>对单层、短序列计算 JVP/VJP 或小型 Jacobian</td><td>显存峰值有记录，数值检查通过</td></tr>
+          <tr><td>4 因果干预</td><td>0.8B Base</td><td>修改残差方向并完成基线/干预对照</td><td>效果可重复，包含负对照</td></tr>
+          <tr><td>5 扩大</td><td>2B</td><td>检查读出和干预是否跨规模保持</td><td>短上下文运行稳定</td></tr>
+          <tr><td>6 原项目</td><td>27B</td><td>在 Apple 大内存设备或远程匹配环境复现完整仓库</td><td>平台与内存条件满足</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout warning">
+        <strong>未知未知</strong>
+        笔记本 GPU 的功耗上限、散热、WSL 内存限制、swap、Windows 后台占用和具体 CUDA/PyTorch 版本都会影响结果。模型卡上的参数量只能提供第一轮估算，最终判断需要峰值显存与运行时间实测。
+      </div>
+
+      <div class="callout good">
+        <strong>主资料</strong>
+        环境部分以 Microsoft 的 CUDA on WSL 文档、NVIDIA 的 CUDA on WSL 指南和 PyTorch 官方安装选择器为准；模型结构与加载要求以 Qwen 官方模型卡为准。相关入口已整理在 <a href="../RESOURCES.md">RESOURCES.md</a>。
+      </div>
+    </section>
+
+    <nav class="lesson-nav">
+      <a href="0002-read-the-code-path.html">上一课：沿代码追踪请求</a>
+      <a href="../TEACHING-START.md">返回课程入口</a>
+    </nav>
+  </article>
+
+  <footer>当前硬件判断基于 Windows 任务管理器截图。WSL 内的命令输出将成为下一轮环境决策的直接证据。</footer>
+</main>
+</body>
+</html>
