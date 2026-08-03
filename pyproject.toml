@@ -1,33 +1,46 @@
 [project]
-name = "jlens-qwen36"
-version = "0.1.0"
-description = "Jacobian lens / J-space visualizer for Qwen3.6-27B (4-bit, MLX)"
+name = "jlens-qwen35-wsl"
+version = "0.3.0"
+description = "Layer readout and residual intervention debugger for Qwen3.5-0.8B-Base on Windows 11 + WSL"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11,<3.14"
+license = {text = "Apache-2.0"}
 dependencies = [
-    "mlx>=0.22",
-    "mlx-lm==0.31.3",
+    "torch>=2.7",
+    "transformers>=5.13,<6",
+    "accelerate>=1.6",
     "numpy>=2.0",
-    "safetensors>=0.4",
-    "transformers>=5.0",
-    "datasets>=2.20",
+    "safetensors>=0.5",
+    "huggingface-hub>=0.30",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
-    "huggingface-hub>=0.25",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0",
+    "httpx>=0.28",
+    "debugpy>=1.8",
+]
+
+[project.scripts]
+jlens-wsl = "jlens_wsl.cli:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["jlens_qwen"]
+[tool.setuptools.packages.find]
+include = ["jlens_wsl*"]
 
-[tool.uv]
-package = true
+[tool.setuptools.package-data]
+jlens_wsl = ["static/*.html"]
 
-[dependency-groups]
-dev = [
-    "pytest>=9.1.1",
-]
+[tool.pytest.ini_options]
+testpaths = ["tests_wsl"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
