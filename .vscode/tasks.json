@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "J-lens: setup WSL",
+      "type": "shell",
+      "command": "bash scripts/setup_wsl.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "J-lens: unit tests",
+      "type": "shell",
+      "command": "source .venv/bin/activate && python -m pytest tests_wsl",
+      "problemMatcher": []
+    },
+    {
+      "label": "J-lens: WSL/CUDA check",
+      "type": "shell",
+      "command": "source .venv/bin/activate && python scripts/check_wsl.py --require-wsl --require-cuda",
+      "problemMatcher": []
+    }
+  ]
+}
