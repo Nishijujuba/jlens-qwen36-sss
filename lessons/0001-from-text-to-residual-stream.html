@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 1 课：从文本到残差流</title>
+  <link rel="stylesheet" href="../assets/teaching.css">
+  <script defer src="../assets/lesson.js"></script>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="eyebrow">Lesson 0001</p>
+    <h1>从文本到残差流</h1>
+    <p class="lead">先建立一条完整的数据流水线。学完后，学习者应能指出 J-lens 读取的对象、输出分数的来源，以及“读到了某个词”究竟代表什么。</p>
+    <div class="lesson-meta">
+      <span class="pill">约 15 分钟</span>
+      <span class="pill">零公式前置</span>
+      <span class="pill">一次完整推理</span>
+    </div>
+  </header>
+
+  <article>
+    <p class="summary">一句话总领：大模型把文本拆成词元，把每个词元变成向量，许多层持续修改一条共享的残差流，最后再把向量翻译成下一个词元的分数。</p>
+
+    <section>
+      <h2>1. 先看整条流水线</h2>
+      <div class="flow" aria-label="模型数据流">
+        <div class="step"><span class="number">STEP 1</span><b>文本</b><small>“法国的首都是”</small></div>
+        <div class="step"><span class="number">STEP 2</span><b>词元编号</b><small>分词器生成整数序列</small></div>
+        <div class="step"><span class="number">STEP 3</span><b>嵌入向量</b><small>每个编号查表得到坐标</small></div>
+        <div class="step"><span class="number">STEP 4</span><b>多层加工</b><small>每层读取并写回残差流</small></div>
+        <div class="step"><span class="number">STEP 5</span><b>Logits</b><small>给词表中的候选词元打分</small></div>
+        <div class="step"><span class="number">STEP 6</span><b>下一个词元</b><small>例如“巴黎”对应的词元</small></div>
+      </div>
+
+      <div class="callout info">
+        <strong>需要先纠正的直觉</strong>
+        模型内部没有一行自然语言句子等待被读取。内部主要是高维数字向量。可解释性工具尝试把这些数字与人类可理解的概念建立受控联系。
+      </div>
+    </section>
+
+    <section>
+      <h2>2. 参数、激活与残差流</h2>
+      <div class="card-grid">
+        <div class="card">
+          <h3>参数</h3>
+          <p>训练结束后保存的权重。它们类似长期形成的道路网络，决定信息可以怎样流动。</p>
+        </div>
+        <div class="card">
+          <h3>激活</h3>
+          <p>模型处理当前输入时临时产生的数值。它们类似某一时刻道路上的车辆分布。</p>
+        </div>
+        <div class="card">
+          <h3>残差流</h3>
+          <p>贯穿各层的共享隐藏向量。它像一块白板，每层读取当前内容，再写入自己的修正量。</p>
+        </div>
+      </div>
+
+      <p>对第 <var>ℓ</var> 层、序列第 <var>t</var> 个位置，仓库常关注一个隐藏向量：</p>
+      <div class="equation">h<sub>ℓ,t</sub> ∈ ℝ<sup>d</sup></div>
+      <p><var>ℓ</var> 表示层编号，<var>t</var> 表示词元位置，<var>d</var> 表示隐藏维度。Qwen3.6-27B 的 <var>d</var> 为 5120，所以一个位置在一层中由 5120 个数描述。</p>
+
+      <div class="quiz" data-answer="a" data-explanation="残差流是一次推理期间持续传递的隐藏状态；训练参数长期保存在模型中，词元编号只负责索引输入。">
+        <h3>检索练习 1</h3>
+        <p>哪一项最接近“残差流”？</p>
+        <div class="quiz-options">
+          <button type="button" data-choice="a" aria-pressed="false">贯穿各层的共享隐藏向量</button>
+          <button type="button" data-choice="b" aria-pressed="false">训练结束后固定模型权重</button>
+          <button type="button" data-choice="c" aria-pressed="false">分词器产生的整数编号表</button>
+        </div>
+        <p class="quiz-feedback" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 最终层怎样变成候选词分数</h2>
+      <p>模型完成最后一层后，会对隐藏向量做归一化，再通过输出矩阵映射到整个词表：</p>
+      <div class="equation">z = W<sub>U</sub> · norm(h<sub>L</sub>)</div>
+
+      <table>
+        <thead><tr><th>符号</th><th>直觉</th><th>典型形状</th></tr></thead>
+        <tbody>
+          <tr><td><code>h_L</code></td><td>最后一层某个位置的内部向量</td><td><code>[d]</code></td></tr>
+          <tr><td><code>norm</code></td><td>把向量尺度调整到输出头熟悉的范围</td><td><code>[d] → [d]</code></td></tr>
+          <tr><td><code>W_U</code></td><td>把内部坐标翻译成词表分数的矩阵</td><td><code>[vocab, d]</code></td></tr>
+          <tr><td><code>z</code></td><td>每个候选词元的原始分数，即 logits</td><td><code>[vocab]</code></td></tr>
+        </tbody>
+      </table>
+
+      <p>Softmax 再把 logits 变成概率：</p>
+      <div class="equation">p<sub>i</sub> = exp(z<sub>i</sub>) / Σ<sub>j</sub> exp(z<sub>j</sub>)</div>
+      <p>这里的指数函数会放大分数差距。J-lens 界面主要关心排序最高的词元，因此经常直接比较 logits 或 top-k 排名。</p>
+    </section>
+
+    <section>
+      <h2>4. 为什么中间层不能直接当最终层读取</h2>
+      <p>一种最简单的方法叫 <strong>logit lens</strong>：把中间层向量直接送进最终输出头。</p>
+      <div class="equation">z<sub>ℓ</sub><sup>logit</sup> = W<sub>U</sub> · norm(h<sub>ℓ</sub>)</div>
+
+      <p>问题在于不同层可能使用不同的内部坐标系。类比来说，中间层用“地铁线路图”记录位置，最终层用“经纬度”输出位置。直接把地铁站编号当经纬度读取，早期层会出现大量噪声。</p>
+
+      <p>J-lens 增加一个运输矩阵 <var>J<sub>ℓ</sub></var>：</p>
+      <div class="equation">z<sub>ℓ</sub><sup>J</sup> = W<sub>U</sub> · norm(J<sub>ℓ</sub> h<sub>ℓ</sub>)</div>
+      <p><var>J<sub>ℓ</sub></var> 是从第 <var>ℓ</var> 层到最终层的平均局部 Jacobian。它尝试先把中间层表示转换到最终层坐标系，再读取词元分数。</p>
+
+      <div class="callout warning">
+        <strong>局部线性近似的边界</strong>
+        Jacobian 描述当前点附近的小变化。模型跨越许多层时包含非线性、门控和输入依赖。平均 Jacobian 能改善读出，无法完整复原全部计算。
+      </div>
+    </section>
+
+    <section>
+      <h2>5. “读到黑mail”意味着什么</h2>
+      <p>某个中间层的 J-lens top token 出现 “blackmail”，说明该隐藏状态经 lens 运输和输出头映射后，这个词元方向得分较高。证据强度可以分成三层：</p>
+
+      <div class="card-grid">
+        <div class="card">
+          <h3>观察</h3>
+          <p>某个词元在某些层和位置排名较高。</p>
+        </div>
+        <div class="card">
+          <h3>稳健读出</h3>
+          <p>更换提示词、拟合样本和随机种子后仍反复出现。</p>
+        </div>
+        <div class="card">
+          <h3>因果证据</h3>
+          <p>沿对应方向修改残差流后，输出按预先预测的方式改变。</p>
+        </div>
+      </div>
+
+      <div class="quiz" data-answer="c" data-explanation="读出说明信息可以从表示中恢复；受控干预并复现预期输出变化，才能提供更强的因果证据。">
+        <h3>检索练习 2</h3>
+        <p>哪种结果提供最强的因果证据？</p>
+        <div class="quiz-options">
+          <button type="button" data-choice="a" aria-pressed="false">单个网格单元显示目标词元</button>
+          <button type="button" data-choice="b" aria-pressed="false">多个提示词重复显示目标词元</button>
+          <button type="button" data-choice="c" aria-pressed="false">受控修改后输出按预测改变</button>
+        </div>
+        <p class="quiz-feedback" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section>
+      <h2>6. 本课完成标准</h2>
+      <ul class="checklist">
+        <li>能画出“文本 → 词元 → 嵌入 → 残差流 → logits → 下一个词元”。</li>
+        <li>能说明参数、激活和残差流的差异。</li>
+        <li>能解释 <code>W_U</code>、<code>h</code>、<code>J</code> 分别承担什么工作。</li>
+        <li>能说明 J-lens 的读出结果为何仍需要干预验证。</li>
+      </ul>
+
+      <div class="callout good">
+        <strong>主资料</strong>
+        阅读 <a href="https://transformer-circuits.pub/2026/workspace/index.html">Anthropic 的 Global Workspace 研究</a>中方法概览，并先忽略推导细节。阅读目标是辨认 residual、Jacobian lens、readout 和 intervention 四个词。
+      </div>
+
+      <p>任何公式或术语出现卡点时，应直接向教学代理提问，并指出卡在“变量含义、形状、运算，还是结论解释”。</p>
+    </section>
+
+    <nav class="lesson-nav">
+      <a href="../reference/0001-glossary.html">参考：术语表</a>
+      <a href="0002-read-the-code-path.html">下一课：沿代码追踪一次请求</a>
+    </nav>
+  </article>
+
+  <footer>课程目标来自 <a href="../MISSION.md">MISSION.md</a>。本课只建立模型内部数据流，暂不要求推导 Jacobian。</footer>
+</main>
+</body>
+</html>
