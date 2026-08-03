@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 2 课：沿代码追踪一次 J-lens 请求</title>
+  <link rel="stylesheet" href="../assets/teaching.css">
+  <script defer src="../assets/lesson.js"></script>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="eyebrow">Lesson 0002</p>
+    <h1>沿代码追踪一次 J-lens 请求</h1>
+    <p class="lead">本课把仓库拆成三条路径：读取模型内部状态、拟合 lens、修改模型内部状态。学习者只需先看数据如何流动，无需立即理解 Metal 内核或全部数学推导。</p>
+    <div class="lesson-meta">
+      <span class="pill">约 20 分钟</span>
+      <span class="pill">代码地图</span>
+      <span class="pill">读出与干预</span>
+    </div>
+  </header>
+
+  <article>
+    <p class="summary">一句话总领：浏览器把消息发给 FastAPI，模型逐层生成并捕获残差流，lens 把每层残差转换到最终层坐标系，服务器选出 top-k 词元并流式返回；干预会在指定层写入残差流，再让后续层继续计算。</p>
+
+    <section>
+      <h2>1. 为什么先追踪请求</h2>
+      <p>该仓库同时包含模型加载、自动微分、分析式 Jacobian、缓存解码、自定义 Metal 内核、后端接口和前端可视化。逐文件从头读到尾会快速丢失主线。</p>
+      <p>更有效的顺序是围绕一个问题追踪数据：</p>
+      <ol class="checklist">
+        <li>输入文本在哪里进入系统？</li>
+        <li>残差流在哪里产生和被捕获？</li>
+        <li>Jacobian 矩阵在哪里应用？</li>
+        <li>词元分数在哪里生成？</li>
+        <li>干预在哪里写入？</li>
+      </ol>
+      <div class="callout info">
+        <strong>阅读原则</strong>
+        第一遍只认清“输入、输出、形状和副作用”。第二遍再研究公式和性能优化。自定义内核属于第三遍内容。
+      </div>
+    </section>
+
+    <section id="read-path">
+      <h2>2. 路径 A：读取中间层</h2>
+      <div class="flow">
+        <div class="step"><span class="number">A1</span><b>浏览器发请求</b><small><code>web/index.html</code></small></div>
+        <div class="step"><span class="number">A2</span><b>后端接收</b><small><code>serve.py</code></small></div>
+        <div class="step"><span class="number">A3</span><b>逐层推理</b><small><code>model.py</code></small></div>
+        <div class="step"><span class="number">A4</span><b>Lens 运输</b><small><code>lens.py</code></small></div>
+        <div class="step"><span class="number">A5</span><b>选 top-k</b><small><code>serve.py</code></small></div>
+        <div class="step"><span class="number">A6</span><b>网格呈现</b><small>位置 × 层</small></div>
+      </div>
+
+      <h3>A1–A2：浏览器进入 FastAPI</h3>
+      <p><a href="../jlens_qwen/serve.py"><code>jlens_qwen/serve.py</code></a> 是后端入口。启动时，它先确定 lens 文件，再加载模型和 lens。聊天界面使用 <code>/api/chat_stream</code> 接口，以服务器发送事件（SSE）持续返回新词元和每层读出。</p>
+      <p><strong>SSE</strong> 可以理解为一条单向流水管：浏览器先发起一次请求，服务器随后分批推送事件。生成一个词元后即可更新界面，无需等待整段回答结束。</p>
+
+      <h3>A3：模型逐层计算并捕获残差流</h3>
+      <p><a href="../jlens_qwen/model.py"><code>jlens_qwen/model.py</code></a> 中的 <code>StreamSession.extend()</code> 接收新增词元 id。它完成以下工作：</p>
+      <ol class="checklist">
+        <li>把词元 id 转成嵌入向量。</li>
+        <li>依次执行所有模型层。</li>
+        <li>在指定层保存 <code>hidden</code>，形成 <code>acts[layer]</code>。</li>
+        <li>对最终状态做归一化和输出头计算，得到下一个词元 logits。</li>
+        <li>更新 KV cache 或 GDN 递归缓存，下一步仅计算新增词元。</li>
+      </ol>
+
+      <pre><code>hidden = text.embed_tokens(ids)
+for layer_index, layer in enumerate(model.layers):
+    hidden = layer(hidden, mask=mask, cache=cache)
+    if layer_index in capture_layers:
+        acts[layer_index] = hidden
+final = text.norm(hidden)
+logits = model.unembed(final[:, -1, :])</code></pre>
+
+      <p>上面的代码是结构化简化。关键对象的形状为：</p>
+      <table>
+        <thead><tr><th>对象</th><th>含义</th><th>形状</th></tr></thead>
+        <tbody>
+          <tr><td><code>hidden</code></td><td>当前批次、当前词元位置的残差流</td><td><code>[1, 新词元数, d_model]</code></td></tr>
+          <tr><td><code>acts[layer]</code></td><td>某层执行后的残差流快照</td><td><code>[1, 新词元数, d_model]</code></td></tr>
+          <tr><td><code>logits</code></td><td>最后位置对整个词表的分数</td><td><code>[vocab_size]</code></td></tr>
+        </tbody>
+      </table>
+
+      <h3>A4：把中间层运输到最终层坐标系</h3>
+      <p><a href="../jlens_qwen/lens.py"><code>jlens_qwen/lens.py</code></a> 中的 <code>JacobianLens.transport()</code> 执行核心矩阵乘法：</p>
+      <div class="equation">ĥ<sub>ℓ</sub> = J<sub>ℓ</sub> h<sub>ℓ</sub></div>
+      <p>代码采用行向量批量表示，因此实现写成 <code>residual @ J.T</code>。这与列向量公式 <code>J @ h</code> 表达同一线性变换。</p>
+      <pre><code>J = lens.jacobian_mx(layer)       # [D, D]
+transported = residual @ J.T      # [..., D]
+logits = model.unembed(model.final_norm(transported))</code></pre>
+
+      <div class="callout warning">
+        <strong>常见误区：矩阵顺序</strong>
+        数学公式常把向量写成列向量；深度学习代码经常把特征放在最后一维并使用行向量批处理。因此公式里的 <code>J @ h</code> 在代码中会表现为 <code>h @ J.T</code>。
+      </div>
+
+      <h3>A5–A6：从完整词表压缩成网格</h3>
+      <p>每个层、每个位置都可能产生约 25 万个词元分数。全部传给浏览器会造成巨大数据量。<code>serve.py</code> 使用分块 top-k 算法，只保留最高的少量词元 id 和分数，再通过 SSE 发给前端。</p>
+      <p>前端把结果放进二维网格：</p>
+      <ul class="checklist">
+        <li>纵轴：序列位置，即每个输入或生成词元。</li>
+        <li>横轴：模型层。</li>
+        <li>单元格：该位置、该层的 top-1 J-lens 词元。</li>
+        <li>详情面板：top-10、分数和干预入口。</li>
+      </ul>
+    </section>
+
+    <section id="fit-path">
+      <h2>3. 路径 B：拟合 Jacobian lens</h2>
+      <p>读取路径需要已有的 <code>J_ℓ</code>。这些矩阵来自 <a href="../jlens_qwen/fit_analytic.py"><code>fit_analytic.py</code></a>。</p>
+
+      <div class="flow">
+        <div class="step"><span class="number">B1</span><b>准备提示词</b><small>覆盖多种文本上下文</small></div>
+        <div class="step"><span class="number">B2</span><b>捕获各层激活</b><small>保存线性化位置</small></div>
+        <div class="step"><span class="number">B3</span><b>算局部 Jacobian</b><small>M<sub>ℓ</sub> = ∂h<sub>ℓ+1</sub>/∂h<sub>ℓ</sub></small></div>
+        <div class="step"><span class="number">B4</span><b>链式相乘</b><small>连接到最终层</small></div>
+        <div class="step"><span class="number">B5</span><b>跨提示词平均</b><small>得到通用近似</small></div>
+        <div class="step"><span class="number">B6</span><b>保存 NPZ</b><small>服务器后续加载</small></div>
+      </div>
+
+      <p>从靠近输出的层向前递推：</p>
+      <div class="equation">J<sub>ℓ-1</sub> = J<sub>ℓ</sub> M<sub>ℓ</sub></div>
+      <p><var>M<sub>ℓ</sub></var> 描述第 <var>ℓ</var> 层输入轻微变化时，该层输出怎样变化；<var>J<sub>ℓ</sub></var> 描述该层输出怎样影响最终层。两者相乘，把影响继续向前连接。</p>
+
+      <div class="callout info">
+        <strong>类比：多段汇率</strong>
+        已知“美元到欧元”的局部兑换比例，又知道“欧元到日元”的局部兑换比例，两段相乘可估算“美元到日元”的局部比例。链式法则承担同样的连接作用。
+      </div>
+
+      <p>跨提示词求平均会降低单个上下文的偶然性，同时会抹平上下文特有结构。20 个提示词适合演示；更多提示词通常带来更稳定的 lens，也增加拟合成本。</p>
+    </section>
+
+    <section id="write-path">
+      <h2>4. 路径 C：写入残差流</h2>
+      <p>读出回答“当前状态沿哪些词元方向得分高”。干预回答“修改该方向后，后续计算是否按预测变化”。主要代码位于 <a href="../jlens_qwen/interventions.py"><code>interventions.py</code></a> 和 <code>model.py</code>。</p>
+
+      <div class="flow">
+        <div class="step"><span class="number">C1</span><b>界面创建规格</b><small>模式、层、位置、词元、强度</small></div>
+        <div class="step"><span class="number">C2</span><b>构造概念方向</b><small>v<sub>t</sub> = J<sub>ℓ</sub><sup>T</sup>W<sub>U</sub>[t]</small></div>
+        <div class="step"><span class="number">C3</span><b>编译层编辑</b><small>按层和位置组织</small></div>
+        <div class="step"><span class="number">C4</span><b>执行层后写入</b><small>修改 hidden</small></div>
+        <div class="step"><span class="number">C5</span><b>下游继续计算</b><small>缓存也接收修改后状态</small></div>
+        <div class="step"><span class="number">C6</span><b>A/B 对比</b><small>基线与干预结果</small></div>
+      </div>
+
+      <h3>概念方向从哪里来</h3>
+      <div class="equation">v<sub>t</sub> = J<sub>ℓ</sub><sup>T</sup> W<sub>U</sub>[t]</div>
+      <p><code>W_U[t]</code> 是词元 <var>t</var> 在最终输出空间中的方向。乘上 <code>J_ℓ.T</code> 后，它被拉回到第 <var>ℓ</var> 层的残差空间。沿 <var>v<sub>t</sub></var> 增加残差，通常会提高该词元的 J-lens 读出分数。</p>
+
+      <table>
+        <thead><tr><th>界面操作</th><th>内部含义</th><th>直觉</th></tr></thead>
+        <tbody>
+          <tr><td>Replace</td><td>交换源方向和目标方向的坐标</td><td>把“法国”分量换成等强度的“中国”分量</td></tr>
+          <tr><td>Add</td><td><code>h ← h + αv_t</code></td><td>增加目标方向</td></tr>
+          <tr><td>Remove</td><td><code>h ← h − αv_t</code></td><td>削弱目标方向</td></tr>
+          <tr><td>Erase</td><td>投影掉一组方向张成的子空间</td><td>移除这些方向能够解释的分量</td></tr>
+        </tbody>
+      </table>
+
+      <h3>修改发生在什么位置</h3>
+      <p><code>StreamSession.extend()</code> 在某层完成计算后，先应用该层编辑，再保存激活并交给下游层。这样，界面看到的是修改后的单元格，后续层与缓存也接收到修改后的状态。</p>
+      <pre><code>hidden = layer(hidden, ...)
+hidden = apply_edits(hidden, edits_for_this_layer, position)
+acts[layer_index] = hidden
+# 下一层继续读取 hidden</code></pre>
+    </section>
+
+    <section>
+      <h2>5. 三条路径之间的关系</h2>
+      <table>
+        <thead><tr><th>路径</th><th>问题</th><th>主要文件</th><th>证据类型</th></tr></thead>
+        <tbody>
+          <tr><td>读取</td><td>中间状态可以读出什么？</td><td><code>serve.py</code>、<code>model.py</code>、<code>lens.py</code></td><td>观察与相关性</td></tr>
+          <tr><td>拟合</td><td>怎样把中间层映射到最终层坐标？</td><td><code>fit_analytic.py</code>、分析式 Jacobian 文件</td><td>测量工具的构造</td></tr>
+          <tr><td>写入</td><td>改变读出方向会怎样影响输出？</td><td><code>interventions.py</code>、<code>model.py</code></td><td>更强的因果证据</td></tr>
+        </tbody>
+      </table>
+
+      <div class="quiz" data-answer="b" data-explanation="修改必须发生在该层执行后、下游层和缓存消费该状态前，后续输出才会承接这一变化。">
+        <h3>检索练习</h3>
+        <p>为了让干预真正影响后续生成，编辑最合适发生在哪里？</p>
+        <div class="quiz-options">
+          <button type="button" data-choice="a" aria-pressed="false">浏览器完成网格渲染之后再改文字</button>
+          <button type="button" data-choice="b" aria-pressed="false">目标层执行后、下游层执行前修改残差</button>
+          <button type="button" data-choice="c" aria-pressed="false">模型输出结束后只调整 top-k 排名</button>
+        </div>
+        <p class="quiz-feedback" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section>
+      <h2>6. 十分钟代码定位练习</h2>
+      <ol class="checklist">
+        <li>在 <code>serve.py</code> 中找到启动加载函数，并确认默认模型 id。</li>
+        <li>在 <code>model.py</code> 中找到 <code>StreamSession.extend()</code>，标出嵌入、层循环、激活捕获和 logits 四行。</li>
+        <li>在 <code>lens.py</code> 中找到 <code>transport()</code>，写出输入和输出形状。</li>
+        <li>在 <code>interventions.py</code> 中找到 <code>steer()</code> 与 <code>patch_swap()</code>，分别用一句自然语言解释。</li>
+        <li>在 <code>fit_analytic.py</code> 中找到 <code>J_current = J_current @ M_l</code>，说明它对应哪条链式法则公式。</li>
+      </ol>
+
+      <div class="callout good">
+        <strong>主资料</strong>
+        依次阅读仓库的 <a href="../README.md">README</a>、<a href="../docs/lenses.md">lenses.md</a> 和 <a href="../docs/interventions.md">interventions.md</a>。这些文档已经把代码分成目标、lens 来源和因果干预三部分。
+      </div>
+
+      <p>阅读中遇到卡点时，应向教学代理提供“文件名、函数名、看不懂的具体行和当前猜测”。这种提问方式能直接定位概念缺口。</p>
+    </section>
+
+    <nav class="lesson-nav">
+      <a href="0001-from-text-to-residual-stream.html">上一课：从文本到残差流</a>
+      <a href="0003-wsl-and-model-choice.html">下一课：WSL 与模型选择</a>
+    </nav>
+  </article>
+
+  <footer>本课建立仓库地图。后续课程会在 CUDA 小模型实验中复现“捕获 → 读出 → 干预 → 对照”的最小闭环。</footer>
+</main>
+</body>
+</html>
