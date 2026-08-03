@@ -1,0 +1,37 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "J-lens WSL: FastAPI debugger",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "jlens_wsl.server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8765"
+      ],
+      "jinja": false,
+      "justMyCode": true,
+      "env": {
+        "JLENS_MODEL_ID": "Qwen/Qwen3.5-0.8B-Base",
+        "JLENS_DEVICE": "cuda",
+        "JLENS_DTYPE": "fp16",
+        "JLENS_PATH": "none",
+        "JLENS_EAGER_LOAD": "0"
+      },
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "J-lens WSL: real-model smoke",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/smoke_qwen.py",
+      "args": ["--device", "cuda", "--dtype", "fp16", "--max-new-tokens", "1"],
+      "justMyCode": true,
+      "console": "integratedTerminal"
+    }
+  ]
+}
