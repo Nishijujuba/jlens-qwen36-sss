@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>J-lens 入门术语表</title>
+  <link rel="stylesheet" href="../assets/teaching.css">
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="eyebrow">Reference 0001</p>
+    <h1>J-lens 入门术语表</h1>
+    <p class="lead">这份参考页把仓库里的数学词、模型词和硬件词放进同一张地图。每个词都包含直觉、精确定义以及容易混淆的相邻概念。</p>
+    <div class="lesson-meta">
+      <span class="pill">适合零基础</span>
+      <span class="pill">可打印</span>
+      <span class="pill">持续更新</span>
+    </div>
+  </header>
+
+  <article>
+    <p class="summary">核心主线：文本先变成词元编号，编号变成向量，向量经过许多层形成残差流，最终被映射成每个候选词元的 logit。Lens 尝试在中间层提前读取这条流水线。</p>
+
+    <section id="model-flow">
+      <h2>一、模型数据流</h2>
+
+      <div class="card">
+        <h3>词元（token）</h3>
+        <p><strong>直觉：</strong>模型阅读和书写时使用的“积木块”。一个汉字、英文单词的一部分、标点或空格都可能成为词元。</p>
+        <p><strong>精确定义：</strong>分词器把文本转换为整数编号序列，例如 <code>[9707, 11, 1917]</code>。模型直接处理这些编号对应的向量。</p>
+        <p><strong>易混淆：</strong>词元和自然语言中的“词”边界经常不同。干预一个显示词时，必须先确认它是否由多个词元组成。</p>
+      </div>
+
+      <div class="card">
+        <h3>嵌入（embedding）</h3>
+        <p><strong>直觉：</strong>把词元编号换成一组可计算的坐标，类似把城市名换成经纬度和多维属性。</p>
+        <p><strong>精确定义：</strong>嵌入矩阵把每个词元 id 映射为长度为 <var>d</var> 的向量。Qwen3.6-27B 的隐藏维度 <var>d</var> 为 5120。</p>
+      </div>
+
+      <div class="card">
+        <h3>向量、矩阵与张量</h3>
+        <p><strong>向量：</strong>一列数字，可理解为一个点或一个方向。</p>
+        <p><strong>矩阵：</strong>二维数字表，经常表示线性变换。矩阵乘向量相当于旋转、拉伸、压缩或重新组合坐标。</p>
+        <p><strong>张量：</strong>更高维的数字数组。模型中常见形状为 <code>[batch, sequence, hidden]</code>。</p>
+      </div>
+
+      <div class="card">
+        <h3>层（layer）</h3>
+        <p><strong>直觉：</strong>模型中的一轮加工站。每层读取当前表示，写回修正后的表示。</p>
+        <p><strong>精确定义：</strong>一个包含注意力或线性注意力、前馈网络、归一化和残差连接的计算模块。</p>
+      </div>
+
+      <div class="card">
+        <h3>激活（activation）与隐藏状态（hidden state）</h3>
+        <p><strong>激活：</strong>模型针对当前输入临时算出的中间数值。</p>
+        <p><strong>隐藏状态：</strong>某个位置经过某层后的向量。它是激活的一种，承载模型当前用于继续计算的信息。</p>
+        <p><strong>对照：</strong>参数是长期存储在模型里的权重；激活是一次推理期间产生的临时状态。</p>
+      </div>
+
+      <div class="card">
+        <h3>残差流（residual stream）</h3>
+        <p><strong>直觉：</strong>一块贯穿全部层的共享白板。每层读取白板，再把自己的增量写回去。</p>
+        <p><strong>精确定义：</strong>Transformer 残差连接中持续传递的隐藏向量。仓库中的 J-lens 主要读取和修改这条流。</p>
+        <p><strong>风险：</strong>白板上的一个方向可能同时服务多个功能。把某个方向命名成单一“概念”需要谨慎。</p>
+      </div>
+    </section>
+
+    <section id="output">
+      <h2>二、从隐藏状态到输出</h2>
+
+      <div class="card">
+        <h3>归一化（normalization）</h3>
+        <p>把向量尺度调整到模型熟悉的范围。这个仓库在中间层读出前应用最终的 RMSNorm，使中间表示更接近输出层所期待的尺度。</p>
+      </div>
+
+      <div class="card">
+        <h3>反嵌入 / 输出头（unembedding / LM head）</h3>
+        <p><strong>直觉：</strong>把内部向量翻译成“每个词元有多匹配”。</p>
+        <p><strong>公式：</strong><code>z = W_U · h</code>。<var>h</var> 是隐藏向量，<var>W<sub>U</sub></var> 是输出矩阵，<var>z</var> 是词表中每个词元的 logit。</p>
+      </div>
+
+      <div class="card">
+        <h3>Logit</h3>
+        <p><strong>直觉：</strong>模型给候选词元的原始分数。分数差值比绝对值更重要。</p>
+        <p><strong>对照：</strong>logit 可以是任意实数；概率被限制在 0 到 1，并且总和为 1。</p>
+      </div>
+
+      <div class="card">
+        <h3>Softmax</h3>
+        <p><strong>作用：</strong>把 logits 转成概率分布。</p>
+        <div class="equation">p<sub>i</sub> = exp(z<sub>i</sub>) / Σ<sub>j</sub> exp(z<sub>j</sub>)</div>
+        <p>指数会放大分数差异。某个词元 logit 领先一点，概率可能领先很多。</p>
+      </div>
+
+      <div class="card">
+        <h3>Top-k</h3>
+        <p>从整个词表中只保留分数最高的 <var>k</var> 个词元。J-lens 网格中的单元格通常展示 top-1，点击后展示 top-10。</p>
+      </div>
+    </section>
+
+    <section id="lens">
+      <h2>三、Lens 与可解释性证据</h2>
+
+      <div class="card">
+        <h3>Logit lens</h3>
+        <p><strong>方法：</strong>直接把中间层隐藏状态送入最终归一化和输出头。</p>
+        <div class="equation">z<sub>ℓ</sub> = W<sub>U</sub> · norm(h<sub>ℓ</sub>)</div>
+        <p><strong>限制：</strong>中间层和最终层使用的“坐标系”可能不同。直接翻译早期层容易产生噪声。</p>
+      </div>
+
+      <div class="card">
+        <h3>Jacobian</h3>
+        <p><strong>直觉：</strong>一张局部影响表。输入的每个坐标轻微变化时，输出的每个坐标会变化多少。</p>
+        <p><strong>精确定义：</strong>对向量函数 <var>f</var>，Jacobian 的元素为 <code>J[i,j] = ∂f_i / ∂x_j</code>。</p>
+        <p><strong>类比：</strong>地图上的坡度只描述当前位置附近的地形。Jacobian 同样是局部线性近似。</p>
+      </div>
+
+      <div class="card">
+        <h3>Jacobian lens / J-lens</h3>
+        <p><strong>方法：</strong>先用每层平均 Jacobian <var>J<sub>ℓ</sub></var> 把中间隐藏状态运输到最终层坐标系，再做输出读出。</p>
+        <div class="equation">z<sub>ℓ</sub> = W<sub>U</sub> · norm(J<sub>ℓ</sub> h<sub>ℓ</sub>)</div>
+        <p><strong>含义：</strong>它回答“按模型从这一层继续演化的平均局部方向，这个状态更像哪些最终词元方向”。</p>
+        <p><strong>限制：</strong>平均 Jacobian 会忽略输入之间的差异；线性近似会遗漏强非线性变化。</p>
+      </div>
+
+      <div class="card">
+        <h3>读出（readout）</h3>
+        <p>从激活中提取某种可理解信号。读出结果说明某个信号可以从表示中恢复，尚未自动证明模型依赖该信号完成输出。</p>
+      </div>
+
+      <div class="card">
+        <h3>因果干预（causal intervention）</h3>
+        <p>主动修改中间激活，再比较输出是否按预测变化。干预比只读观察提供更强的因果证据。</p>
+        <p><strong>必要控制：</strong>相同提示词、相同模板、相同温度、相同随机种子或贪心解码，以及干预前后的成对比较。</p>
+      </div>
+
+      <div class="card">
+        <h3>Steering、Swap 与 Ablation</h3>
+        <p><strong>Steering：</strong>沿某个方向加减向量，增强或削弱一个读出方向。</p>
+        <p><strong>Swap：</strong>测量源方向的当前强度，再把它替换为目标方向。</p>
+        <p><strong>Ablation：</strong>投影掉一组方向，观察失去这些分量后发生什么。</p>
+      </div>
+
+      <div class="callout warning">
+        <strong>关键边界</strong>
+        “能读出”可能来自相关性、冗余编码或探针自身能力。“干预有效”仍可能伴随副作用。可靠结论需要多提示词、多模型、多随机种子和负对照。
+      </div>
+    </section>
+
+    <section id="calculus">
+      <h2>四、自动微分相关词</h2>
+
+      <div class="card-grid">
+        <div class="card">
+          <h3>梯度（gradient）</h3>
+          <p>标量输出对输入向量每个坐标的偏导数组成的向量，指出局部增长最快的方向。</p>
+        </div>
+        <div class="card">
+          <h3>VJP</h3>
+          <p>Vector-Jacobian Product，计算 <code>vᵀJ</code>。反向传播常用这种形式，避免显式生成完整 Jacobian。</p>
+        </div>
+        <div class="card">
+          <h3>JVP</h3>
+          <p>Jacobian-Vector Product，计算 <code>Jv</code>。它回答“沿输入方向 v 轻推后，输出向哪里变化”。</p>
+        </div>
+        <div class="card">
+          <h3>链式法则</h3>
+          <p>复合函数的局部影响可以通过 Jacobian 相乘连接。仓库用它把逐层 Jacobian 链成从中间层到最终层的运输矩阵。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>五、Qwen3.5/3.6 架构词</h2>
+
+      <div class="card">
+        <h3>全注意力（full attention）</h3>
+        <p>每个位置可以根据查询与历史键的相似度读取历史值。它表达能力强，长序列的计算和缓存成本较高。</p>
+      </div>
+
+      <div class="card">
+        <h3>Gated DeltaNet（GDN）</h3>
+        <p>一种带门控更新的线性注意力/递归状态机制。它把历史压缩进可更新状态，降低长序列计算成本。Qwen3.5/3.6 把 GDN 层与全注意力层混合使用。</p>
+        <p><strong>项目难点：</strong>GDN 的高效融合前向内核缺少项目所需的反向路径，因此仓库实现了自定义 Metal 反向内核。</p>
+      </div>
+
+      <div class="card">
+        <h3>KV cache 与递归状态缓存</h3>
+        <p>生成新词元时保存以前步骤的中间结果，避免每一步重新计算全部历史。全注意力使用 KV cache，GDN 使用卷积与递归状态缓存。</p>
+      </div>
+    </section>
+
+    <section id="hardware">
+      <h2>六、精度、显存与平台</h2>
+
+      <div class="card">
+        <h3>FP32、BF16、FP16 与 4-bit</h3>
+        <p>这些格式决定每个数使用多少位。位数越少，权重占用通常越低；数值误差和算子限制也会增加。</p>
+        <p><strong>粗略权重预算：</strong><code>参数量 × 每参数字节数</code>。BF16/FP16 约 2 字节，4-bit 理论下限约 0.5 字节；量化尺度、元数据和未量化模块会增加实际占用。</p>
+      </div>
+
+      <div class="card">
+        <h3>专用显存与共享 GPU 内存</h3>
+        <p>专用显存位于 GPU 本地，带宽高。共享 GPU 内存来自系统 RAM，经由较慢路径访问。共享容量无法等价替代专用显存。</p>
+      </div>
+
+      <div class="card">
+        <h3>推理内存与梯度内存</h3>
+        <p>只生成文本主要保存权重、缓存和少量激活。计算梯度或 Jacobian 还要保留计算图、中间激活和临时矩阵，峰值内存会显著增加。</p>
+      </div>
+
+      <div class="card-grid">
+        <div class="card">
+          <h3>MLX</h3>
+          <p>Apple 发起的机器学习数组框架。原项目使用 MLX、mlx-lm 和自定义 Metal 内核。</p>
+        </div>
+        <div class="card">
+          <h3>Metal</h3>
+          <p>Apple 平台的图形和通用计算 API。仓库的 GDN 反向优化直接依赖 Metal。</p>
+        </div>
+        <div class="card">
+          <h3>CUDA</h3>
+          <p>NVIDIA 的 GPU 计算平台。Windows 笔记本通过 WSL 2 运行 Linux CUDA/PyTorch 工作流。</p>
+        </div>
+        <div class="card">
+          <h3>WSL 2</h3>
+          <p>Windows 中的 Linux 环境。它可以访问 Windows 主机上的 NVIDIA 驱动所暴露的 CUDA 能力。</p>
+        </div>
+      </div>
+    </section>
+
+    <nav class="lesson-nav">
+      <a href="../lessons/0001-from-text-to-residual-stream.html">进入第 1 课：从文本到残差流</a>
+      <a href="../TEACHING-START.md">返回学习入口</a>
+    </nav>
+  </article>
+
+  <footer>本页用于快速查阅。遇到术语时先回到主线：它位于输入、内部状态、读出、干预，还是硬件运行层。</footer>
+</main>
+</body>
+</html>
