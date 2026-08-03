@@ -6,12 +6,13 @@
 
 ## Success looks like
 
-- 能用自己的话解释：词元、向量、层、残差流、logit、softmax、梯度、Jacobian、logit lens、Jacobian lens 和因果干预。
-- 能沿着一次请求追踪主要代码路径：`model.py` → `lens.py` → `serve.py`，并说明拟合流程和干预流程分别由哪些文件承担。
-- 能区分“中间层读出了某个概念”和“修改该概念确实改变了输出”这两种证据。
-- 能在 Windows 11 + WSL + NVIDIA CUDA 环境中运行缩小版实验，并记录模型、精度、显存、提示词、随机性和输出。
+- 能用自己的话解释：词元、向量、层、残差流、logit、softmax、梯度、Jacobian、Logit Lens、Jacobian Lens 和因果干预。
+- 能沿着一次请求追踪 WSL 教学版代码路径：`jlens_wsl/server.py` → `runtime.py` → `lens.py`，并与原 MLX 实现对应。
+- 能区分“中间层读出了某个概念”和“修改该概念确实改变了输出”两种证据。
+- 能在 Windows 11 + WSL + NVIDIA CUDA 环境中完成官方 Qwen3.5-0.8B-Base 权重加载、层激活捕获、Logit Lens 读出和一个生成词元。
+- 能记录模型、精度、显存、提示词、层、随机性、基线和干预输出，使实验可以复现。
 - 能解释原项目为何围绕 Qwen3.6-27B、MLX、Gated DeltaNet 和自定义 Metal 反向内核设计。
-- 能在完成基础实验后，判断下一步应扩大模型、增加拟合提示词，还是提高验证强度。
+- 能在完成基础实验后，判断下一步应扩大模型、拟合 0.8B Jacobian Lens、增加提示词，还是提高验证强度。
 
 ## Constraints
 
@@ -19,12 +20,14 @@
 - 学习者了解大模型的概念框架，尚未系统学习线性代数、概率和微积分公式在模型中的具体用法。
 - 教学使用中文，公式先讲直觉、变量含义和维度，再讲运算。
 - 本地设备为 Windows 11 笔记本、WSL、约 32 GB 系统内存、RTX 3080 Laptop GPU、16 GB 专用显存。
-- 原项目明确面向 Apple Silicon / MLX，并包含架构专用的 Metal 内核；`main` 分支保持原状，教学材料和后续兼容实验仅进入 `teach` 分支。
+- 原项目明确面向 Apple Silicon / MLX，并包含架构专用的 Metal 内核；`main` 分支保持原状，Windows/WSL 活动实现进入 `teach` 分支。
 - 所有实验先追求可运行、可理解、可复现，再追求模型规模和速度。
+- Base 模型用于下一词预测与机制实验，其输出不能按对话助手标准评价。
 
 ## Out of scope
 
-- 在本地笔记本上完成 Qwen3.6-27B 的研究级全深度 Jacobian lens 拟合。
+- 在本地笔记本上完成 Qwen3.6-27B 的研究级全深度 Jacobian Lens 拟合。
 - 第一阶段移植或重写自定义 Metal GDN 反向内核。
+- 第一阶段承诺高吞吐、多人并发或长上下文服务性能。
 - 把单次可视化结果直接当作模型“真实思维”或稳定机制证据。
-- 在掌握基础前深入高阶微分几何、复杂自动微分优化或 CUDA 内核开发。
+- 在掌握基础前深入复杂自动微分优化或 CUDA 内核开发。

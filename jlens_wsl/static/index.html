@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Qwen3.5-0.8B 层级读出调试器</title>
+<style>
+:root{color-scheme:dark;--bg:#0c0d10;--panel:#15171c;--panel2:#1b1e25;--line:#30343d;--text:#f1f3f5;--muted:#9aa3ad;--accent:#f2a65a;--good:#74c69d;--bad:#ff7b72;--gdn:#8ecae6;--attn:#cdb4db}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}button,input,textarea,select{font:inherit}.shell{max-width:1600px;margin:auto;padding:20px}.top{display:flex;gap:16px;align-items:flex-start;justify-content:space-between;margin-bottom:16px}.title h1{font-size:24px;margin:0 0 4px}.title p{margin:0;color:var(--muted)}.status{min-width:310px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}.status-row{display:flex;justify-content:space-between;gap:12px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;background:var(--muted)}.dot.good{background:var(--good)}.dot.bad{background:var(--bad)}.grid{display:grid;grid-template-columns:minmax(340px,460px) minmax(0,1fr);gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}.panel h2{font-size:16px;margin:0 0 12px}.field{margin:0 0 12px}.field label{display:block;color:var(--muted);font-size:12px;margin-bottom:5px}.row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.row.three{grid-template-columns:repeat(3,minmax(0,1fr))}textarea,input,select{width:100%;background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px}textarea{min-height:150px;resize:vertical}.buttons{display:flex;gap:8px;flex-wrap:wrap}button{border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);padding:9px 13px;cursor:pointer}button.primary{background:var(--accent);color:#18130d;border-color:transparent;font-weight:700}button:disabled{opacity:.45;cursor:not-allowed}.note{background:#101216;border-left:3px solid var(--accent);padding:9px 11px;color:var(--muted);margin:12px 0}.advanced{border-top:1px solid var(--line);margin-top:14px;padding-top:12px}.advanced summary{cursor:pointer;color:var(--muted)}.output{min-height:98px;background:#0f1115;border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere}.metrics{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:9px 0}.table-wrap{overflow:auto;max-height:650px;border:1px solid var(--line);border-radius:8px}.lens-table{border-collapse:separate;border-spacing:0;min-width:max-content;width:100%}.lens-table th,.lens-table td{border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;max-width:150px}.lens-table th{position:sticky;top:0;background:#20232a;z-index:2;font-size:11px;color:var(--muted)}.lens-table th:first-child,.lens-table td:first-child{position:sticky;left:0;background:#181a20;z-index:1;min-width:120px}.lens-table th:first-child{z-index:3;background:#20232a}.cell-token{font-weight:650}.cell-score{font-size:10px;color:var(--muted)}.layer-gdn{box-shadow:inset 0 3px 0 var(--gdn)}.layer-attn{box-shadow:inset 0 3px 0 var(--attn)}.legend{display:flex;gap:14px;color:var(--muted);font-size:11px;margin-bottom:8px}.swatch{display:inline-block;width:12px;height:3px;vertical-align:middle;margin-right:5px}.log{margin-top:12px;max-height:120px;overflow:auto;color:var(--muted);font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.warning{color:#ffd166}.error{color:var(--bad)}@media(max-width:980px){.grid{grid-template-columns:1fr}.top{flex-direction:column}.status{width:100%}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="top">
+    <div class="title">
+      <h1>Qwen3.5-0.8B 层级读出调试器</h1>
+      <p>Windows 11 + WSL + PyTorch；默认采用 Logit Lens，逐词完整重放以便断点、层钩子和干预复现。</p>
+    </div>
+    <div class="status">
+      <div class="status-row"><span><i id="status-dot" class="dot"></i><b id="status-text">正在读取状态</b></span><button id="load-btn">加载模型</button></div>
+      <div id="model-meta" style="margin-top:8px;color:var(--muted);font-size:12px">—</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>实验输入</h2>
+      <div class="note"><b>基础模型提示：</b>该模型是预训练 Base 模型，适合补全与可解释性实验。它没有接受完整的助手式指令对齐，输出可能像原始语料续写。</div>
+      <div class="field"><label for="prompt">提示词</label><textarea id="prompt">The capital of France is</textarea></div>
+      <div class="row three">
+        <div class="field"><label>输入模式</label><select id="mode"><option value="completion">文本补全</option><option value="chat">聊天模板</option></select></div>
+        <div class="field"><label>生成词元</label><input id="max-tokens" type="number" min="1" max="64" value="16"></div>
+        <div class="field"><label>每层 Top-K</label><input id="top-k" type="number" min="1" max="10" value="5"></div>
+      </div>
+      <div class="row three">
+        <div class="field"><label>温度（0=贪心）</label><input id="temperature" type="number" min="0" max="2" step="0.1" value="0"></div>
+        <div class="field"><label>Top-p</label><input id="top-p" type="number" min="0.05" max="1" step="0.05" value="1"></div>
+        <div class="field"><label>随机种子</label><input id="seed" type="number" value="0"></div>
+      </div>
+      <div class="field"><label>层（空白=全部 24 层；例：0,3,7,11,15,19,23）</label><input id="layers" placeholder="留空显示全部层"></div>
+      <div class="buttons"><button id="analyze-btn">分析输入</button><button class="primary" id="generate-btn">生成并逐层读出</button><button id="clear-btn">清空结果</button></div>
+
+      <details class="advanced">
+        <summary>探索性残差干预</summary>
+        <div class="note">Logit Lens 干预使用输出词向量方向，属于探索工具。加载匹配的 Jacobian lens 后，方向会变为 JᵀW<sub>U</sub>。可读出某词与因果证明是两种证据。</div>
+        <div class="row">
+          <div class="field"><label>方式</label><select id="int-mode"><option value="none">关闭</option><option value="add">增加</option><option value="remove">削弱</option><option value="replace">替换</option></select></div>
+          <div class="field"><label>层编号</label><input id="int-layer" type="number" min="0" max="23" value="12"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>目标词元文本</label><input id="int-token" placeholder="建议包含前导空格，例如： safety"></div>
+          <div class="field"><label>强度 α</label><input id="int-alpha" type="number" min="-20" max="20" step="0.25" value="1"></div>
+        </div>
+        <div class="field"><label>来源文本（仅“替换”需要）</label><input id="int-source" placeholder="例如： France"></div>
+      </details>
+      <div id="log" class="log"></div>
+    </section>
+
+    <section class="panel">
+      <h2>输出与层级工作区</h2>
+      <div id="output" class="output">等待实验。</div>
+      <div id="metrics" class="metrics"></div>
+      <div class="legend"><span><i class="swatch" style="background:var(--gdn)"></i>Gated DeltaNet</span><span><i class="swatch" style="background:var(--attn)"></i>全注意力</span></div>
+      <div class="table-wrap"><table id="lens-table" class="lens-table"><thead></thead><tbody></tbody></table></div>
+    </section>
+  </div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+let modelInfo = null;
+let busy = false;
+
+function log(message, cls='') {
+  const line = document.createElement('div');
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+  if (cls) line.className = cls;
+  $('log').prepend(line);
+}
+function setBusy(value) {
+  busy = value;
+  for (const id of ['load-btn','analyze-btn','generate-btn']) $(id).disabled = value;
+}
+function parseLayers() {
+  const raw = $('layers').value.trim();
+  if (!raw) return null;
+  const values = [...new Set(raw.split(',').map(x => Number(x.trim())))];
+  if (values.some(x => !Number.isInteger(x))) throw new Error('层列表必须是逗号分隔的整数');
+  return values;
+}
+function requestBase() {
+  return {
+    prompt: $('prompt').value,
+    mode: $('mode').value,
+    layers: parseLayers(),
+    top_k: Number($('top-k').value)
+  };
+}
+function intervention() {
+  const mode = $('int-mode').value;
+  if (mode === 'none') return null;
+  const result = {mode, layer:Number($('int-layer').value), token:$('int-token').value, alpha:Number($('int-alpha').value)};
+  if (mode === 'replace') result.source = $('int-source').value;
+  return result;
+}
+function cellTitle(readout) {
+  return readout.top.map((x,i) => `${i+1}. ${JSON.stringify(x.token)}  logit=${x.score.toFixed(3)}  id=${x.token_id}`).join('\n');
+}
+function layerClass(layer) {
+  const type = modelInfo?.layer_types?.[layer] || '';
+  return type.includes('linear') ? 'layer-gdn' : type.includes('full') ? 'layer-attn' : '';
+}
+function buildHeader(layers) {
+  const head = $('lens-table').querySelector('thead'); head.innerHTML='';
+  const tr=document.createElement('tr');
+  const first=document.createElement('th'); first.textContent='位置 / 词元'; tr.appendChild(first);
+  for (const layer of layers) {
+    const th=document.createElement('th'); th.className=layerClass(layer);
+    const type=modelInfo?.layer_types?.[layer] || '';
+    th.textContent=`L${layer}`; th.title=type; tr.appendChild(th);
+  }
+  head.appendChild(tr);
+}
+function appendRow(label, readouts, layers) {
+  const map=new Map(readouts.map(x=>[x.layer,x]));
+  const tr=document.createElement('tr');
+  const first=document.createElement('td'); first.textContent=label; tr.appendChild(first);
+  for (const layer of layers) {
+    const td=document.createElement('td'); const item=map.get(layer);
+    if (item?.top?.length) {
+      td.title=cellTitle(item);
+      const token=document.createElement('div'); token.className='cell-token'; token.textContent=item.top[0].token || '∅';
+      const score=document.createElement('div'); score.className='cell-score'; score.textContent=item.top[0].score.toFixed(2);
+      td.append(token,score);
+    } else td.textContent='—';
+    tr.appendChild(td);
+  }
+  $('lens-table').querySelector('tbody').appendChild(tr);
+}
+function clearResult() {
+  $('output').textContent='等待实验。'; $('metrics').innerHTML='';
+  $('lens-table').querySelector('thead').innerHTML=''; $('lens-table').querySelector('tbody').innerHTML='';
+}
+async function jsonRequest(path, options={}) {
+  const response=await fetch(path, options); const text=await response.text();
+  let data; try{data=JSON.parse(text)}catch{data={detail:text}}
+  if(!response.ok) throw new Error(data.detail || `${response.status}`);
+  return data;
+}
+async function refreshModel(load=false) {
+  try {
+    const data=await jsonRequest(load?'/api/load':'/api/model',{method:load?'POST':'GET'});
+    modelInfo=data;
+    $('status-dot').className='dot good'; $('status-text').textContent=data.loaded?'模型已加载':'服务可用';
+    const gpu=data.cuda?`${data.cuda.name} · ${data.cuda.total_vram_gib} GiB`:'CPU';
+    $('model-meta').textContent=`${data.model_id} · ${data.device}/${data.dtype} · ${data.n_layers} 层 · ${data.lens_mode} lens · ${gpu}`;
+    log(`模型状态：${data.model_id}，${data.device}，${data.lens_mode} lens`);
+  } catch(error) {
+    $('status-dot').className='dot bad'; $('status-text').textContent='模型未就绪'; $('model-meta').textContent=error.message; log(error.message,'error');
+  }
+}
+async function analyze() {
+  if(busy)return; setBusy(true); clearResult();
+  try{
+    const body={...requestBase(),max_positions:16};
+    const data=await jsonRequest('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    buildHeader(data.layers);
+    for(const pos of data.positions) appendRow(`${pos.position} · ${JSON.stringify(pos.token)}`,pos.readouts,data.layers);
+    $('output').textContent='输入分析完成；表格中的每个格子显示该层对当前输入位置预测的最高词元。';
+    $('metrics').innerHTML=`<span>${data.input_tokens} 输入词元</span><span>${data.elapsed_seconds.toFixed(2)} 秒</span><span>${data.lens_mode} lens</span>`;
+  }catch(error){$('output').textContent=error.message;log(error.message,'error')}finally{setBusy(false)}
+}
+async function generate() {
+  if(busy)return; setBusy(true); clearResult();
+  try{
+    const body={...requestBase(),max_new_tokens:Number($('max-tokens').value),temperature:Number($('temperature').value),top_p:Number($('top-p').value),seed:Number($('seed').value),intervention:intervention()};
+    const response=await fetch('/api/generate_stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!response.ok){const d=await response.json();throw new Error(d.detail||response.statusText)}
+    const reader=response.body.getReader(), decoder=new TextDecoder(); let buffer='', layers=[];
+    while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});
+      let boundary; while((boundary=buffer.indexOf('\n\n'))>=0){const block=buffer.slice(0,boundary);buffer=buffer.slice(boundary+2);const line=block.split('\n').find(x=>x.startsWith('data: '));if(!line)continue;const data=JSON.parse(line.slice(6));
+        if(data.event==='start'){layers=data.layers;buildHeader(layers);$('output').textContent='';log(`开始生成；${data.decode_strategy}`);if(data.intervention)log(`干预：L${data.intervention.layer} ${data.intervention.mode} ${data.intervention.token}`,'warning')}
+        else if(data.event==='token'){$('output').textContent=data.text;appendRow(`${data.position} · ${JSON.stringify(data.token)}`,data.readouts,layers);$('metrics').innerHTML=`<span>第 ${data.step+1} 个输出词元</span><span>本步 ${data.step_seconds.toFixed(2)} 秒</span>`}
+        else if(data.event==='end'){$('metrics').innerHTML=`<span>${data.output_tokens} 输出词元</span><span>${data.elapsed_seconds.toFixed(2)} 秒</span><span>停止：${data.stop_reason}</span>`;log('生成结束')}
+        else if(data.event==='error')throw new Error(data.error);
+      }
+    }
+  }catch(error){$('output').textContent=error.message;log(error.message,'error')}finally{setBusy(false)}
+}
+$('load-btn').onclick=async()=>{setBusy(true);await refreshModel(true);setBusy(false)};
+$('analyze-btn').onclick=analyze;$('generate-btn').onclick=generate;$('clear-btn').onclick=clearResult;
+refreshModel(false);
+</script>
+</body>
+</html>

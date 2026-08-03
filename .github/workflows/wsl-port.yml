@@ -1,0 +1,75 @@
+name: WSL port verification
+
+on:
+  push:
+    branches: [teach]
+    paths:
+      - "jlens_wsl/**"
+      - "tests_wsl/**"
+      - "scripts/**"
+      - "pyproject.toml"
+      - ".github/workflows/wsl-port.yml"
+  pull_request:
+    paths:
+      - "jlens_wsl/**"
+      - "tests_wsl/**"
+      - "scripts/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+    inputs:
+      run_real_model:
+        description: "Download Qwen3.5-0.8B-Base and run one CPU forward pass"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Bootstrap packaging and install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Install project
+        run: python -m pip install --no-build-isolation -e '.[dev]'
+      - name: Unit and API tests
+        run: python -m pytest tests_wsl
+      - name: Compile check
+        run: python -m compileall -q jlens_wsl scripts
+
+  real-model-smoke:
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_real_model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Bootstrap packaging and install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Install project
+        run: python -m pip install --no-build-isolation -e .
+      - name: Official checkpoint smoke test
+        run: >-
+          python scripts/smoke_qwen.py
+          --device cpu
+          --dtype fp32
+          --max-new-tokens 1
+          --layers 0,23

@@ -1,93 +1,111 @@
 # J-lens 教学工作区入口
 
-该分支把 `jlens-qwen36-sss` 转换为一个可持续学习的工作区。`main` 保留原项目；`teach` 增加任务目标、学习记录、参考页、分阶段课程和硬件决策。
+该分支同时承担两件事：保存从零开始的可解释性课程，并提供可在 Windows 11 + WSL + NVIDIA CUDA 上调试的 Qwen3.5-0.8B 实现。`main` 继续保存原始 Apple Silicon / MLX / Qwen3.6-27B 路径。
 
-## 当前结论
+## 当前可运行路径
 
-1. 仓库名中的 `qwen36` 指 **Qwen 3.6**。默认模型为 **Qwen3.6-27B**，参数量为 27B。
-2. 原项目围绕 Apple Silicon、MLX 和自定义 Metal Gated DeltaNet 反向内核设计。
-3. 当前笔记本为 Windows 11 + WSL、RTX 3080 Laptop 16 GB 专用显存、约 32 GB 系统内存。
-4. 该设备适合从 `Qwen/Qwen3.5-0.8B-Base` 开始 CUDA/PyTorch 教学实验，再升级到 `Qwen/Qwen3.5-2B`。
-5. Qwen3.6-27B 的完整 J-lens 路径需要匹配的平台与更宽裕的内存；本地 CPU/共享内存卸载不作为学习基线。
+```text
+浏览器
+  ↓ HTTP / SSE
+jlens_wsl/server.py
+  ↓ 调用
+jlens_wsl/runtime.py
+  ↓ 捕获层激活、生成、干预
+jlens_wsl/lens.py
+  ↓ 最终 RMSNorm + lm_head
+每层 Top-K 词元读出
+```
+
+默认模型是 `Qwen/Qwen3.5-0.8B-Base`，默认探针是 Logit Lens。真实 Jacobian Lens 需要另行提供与 24 层、隐藏维度 1024 完全匹配的拟合矩阵。
+
+## 第一次启动
+
+在 Windows PowerShell 更新并确认 WSL：
+
+```powershell
+wsl --update
+wsl --status
+```
+
+在 WSL 终端执行：
+
+```bash
+mkdir -p ~/src && cd ~/src
+git clone https://github.com/Nishijujuba/jlens-qwen36-sss.git
+cd jlens-qwen36-sss
+git switch teach
+bash scripts/setup_wsl.sh
+bash scripts/run_wsl.sh
+```
+
+浏览器打开 `http://localhost:8765`。
 
 ## 学习顺序
 
-| 顺序 | 文件 | 本阶段成果 |
+| 顺序 | 文件或动作 | 本阶段成果 |
 |---|---|---|
 | 0 | [`MISSION.md`](MISSION.md) | 明确学习目标、完成标准和边界 |
-| 1 | [`lessons/0001-from-text-to-residual-stream.html`](lessons/0001-from-text-to-residual-stream.html) | 理解词元、向量、层、残差流、logit 和 J-lens 主公式 |
-| 2 | [`lessons/0002-read-the-code-path.html`](lessons/0002-read-the-code-path.html) | 沿读取、拟合、写入三条路径定位核心代码 |
-| 3 | [`lessons/0003-wsl-and-model-choice.html`](lessons/0003-wsl-and-model-choice.html) | 完成 WSL/CUDA 验收并理解模型选择依据 |
-| 随时 | [`reference/0001-glossary.html`](reference/0001-glossary.html) | 查阅术语、公式、架构和硬件概念 |
-| 持续 | [`learning-records/`](learning-records/) | 记录已真正掌握的内容，决定下一课难度 |
+| 1 | [`lessons/0001-from-text-to-residual-stream.html`](lessons/0001-from-text-to-residual-stream.html) | 理解词元、向量、层、残差流和主公式 |
+| 2 | [`lessons/0002-read-the-code-path.html`](lessons/0002-read-the-code-path.html) | 定位原 MLX 实现的读取、拟合和写入路径 |
+| 3 | [`lessons/0003-wsl-and-model-choice.html`](lessons/0003-wsl-and-model-choice.html) | 理解硬件约束和 0.8B 选择依据 |
+| 4 | [`docs/ARCHITECTURE-WSL.md`](docs/ARCHITECTURE-WSL.md) | 阅读新的 PyTorch 数据流与设计取舍 |
+| 5 | [`docs/DEBUGGING.md`](docs/DEBUGGING.md) | 在 VS Code 中逐层下断点并检查张量 |
+| 验收 | `python scripts/smoke_qwen.py --device cuda --dtype fp16` | 完成真实权重、前向、读出和生成 |
+| 随时 | [`reference/0001-glossary.html`](reference/0001-glossary.html) | 查阅术语和公式 |
+| 持续 | [`learning-records/`](learning-records/) | 记录真正掌握的内容 |
 
-## 怎样打开 HTML 课程
-
-在本地仓库执行：
+## HTML 课程
 
 ```bash
-git fetch origin
-git switch teach
+source .venv/bin/activate
 python -m http.server 8000
 ```
 
-随后在浏览器打开：
+浏览器打开：
 
 ```text
 http://localhost:8000/lessons/0001-from-text-to-residual-stream.html
 ```
-
-直接双击 HTML 也可以阅读；本地 HTTP 服务在链接跳转和后续交互实验上更稳定。
 
 ## 当前文件结构
 
 ```text
 MISSION.md                         学习任务与完成标准
 RESOURCES.md                       经过筛选的知识来源与社区
-NOTES.md                           学习偏好、硬件和模型决策
+NOTES.md                           学习偏好、硬件、实现决策和风险
 TEACHING-START.md                  本入口
-assets/
-  teaching.css                     所有课程共享的样式
-  lesson.js                        所有课程共享的测验组件
-reference/
-  0001-glossary.html               可打印的入门术语表
-lessons/
-  0001-from-text-to-residual-stream.html
-  0002-read-the-code-path.html
-  0003-wsl-and-model-choice.html
-learning-records/
-  0001-starting-point-and-hardware.md
+jlens_wsl/
+  config.py                        环境配置
+  lens.py                          Logit/Jacobian 读出
+  runtime.py                       模型、钩子、生成和残差干预
+  server.py                        FastAPI / SSE
+  static/index.html                网页调试器
+scripts/
+  setup_wsl.sh                     一次性安装
+  check_wsl.py                     WSL/CUDA 预检
+  run_wsl.sh                       启动服务
+  smoke_qwen.py                    真实模型冒烟测试
+  verify_from_windows.ps1          Windows 到 WSL 的整体验证
+tests_wsl/                         无需模型下载的自动测试
+docs/                              WSL、架构和调试说明
+assets/ lessons/ reference/        教学材料
+jlens_qwen/                        原 MLX 实现，作为对照阅读
 ```
 
-## 学习循环
+## 学习闭环
 
-每个主题采用同一闭环：
+1. 先预测某段代码将产生什么张量和输出。
+2. 在调试器中观察实际形状、数值范围和 Top-K。
+3. 只改变一个变量，例如层、提示词、精度或干预强度。
+4. 保存基线与干预结果。
+5. 判断证据属于观察、相关性、因果干预，还是跨样本稳健结论。
+6. 能独立解释后新增 learning record。
 
-1. **获取知识**：阅读一节短课和对应主资料。
-2. **主动回忆**：关闭页面，用自己的话复述数据流或公式。
-3. **代码定位**：在仓库中找到公式对应的函数和张量形状。
-4. **最小实验**：只改变一个变量，保留基线结果。
-5. **证据分级**：区分观察、相关性、干预结果和可推广结论。
-6. **记录掌握**：学习者能独立解释或完成任务后，新增 learning record。
+## 第一轮建议断点
 
-## 第一个动手检查点
+- `jlens_wsl/runtime.py::_forward_capture`
+- `jlens_wsl/lens.py::readout_last_position`
+- `jlens_wsl/runtime.py::_apply_intervention`
+- `jlens_wsl/runtime.py::generate`
 
-完成前三课后，在 Windows PowerShell 和 WSL 中执行第 3 课的环境命令，并记录：
-
-- WSL 版本与发行版是否为 WSL 2。
-- `nvidia-smi` 是否看到 RTX 3080 Laptop。
-- 驱动版本与专用显存。
-- PyTorch 版本、CUDA runtime 和 `torch.cuda.is_available()`。
-- FP16 CUDA 矩阵乘法是否成功。
-
-这些结果将决定下一步环境文件和实验代码采用哪个 PyTorch/CUDA 组合。未经实测，不预设完整梯度实验一定可行。
-
-## 后续课程规划
-
-- 第 4 课：用 0.8B 模型捕获指定层隐藏状态，逐项解释张量形状。
-- 第 5 课：实现最小 logit lens，并验证最终层读出与模型 logits 一致。
-- 第 6 课：用有限差分、JVP 和 VJP 建立 Jacobian 直觉。
-- 第 7 课：完成一次残差 steering 和基线/干预 A/B 对照。
-- 第 8 课：把教学实现与原仓库的 MLX/Metal 实现逐函数对应。
-
-后续代码将在环境验收后添加，避免提前锁定与本机驱动或 CUDA 版本不兼容的依赖。
+每个断点先检查 `[batch, sequence, hidden]` 三个维度。Qwen3.5-0.8B 的隐藏维度应为 1024，层数应为 24；若实际值不同，应先停止实验并检查模型版本与内部 API。
